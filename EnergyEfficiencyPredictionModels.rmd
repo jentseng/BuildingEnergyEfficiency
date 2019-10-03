@@ -1,0 +1,565 @@
+---
+title: "Predictive Modeling: Building Energy Efficiency"
+authors: "Jenny T. Qinzi Z., Arjun R., Skyler S., Emily W."
+date: "7/28/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Set up and data summary
+```{r}
+rm(list=ls())
+energy = read.csv("ENB2012_data.csv")
+summary(energy)
+cor(energy) #almost complete correlation between relative compactness and surface area (between height and roof as well, but the latter pair is not explainable...) - drop relative compactness for one of the full predictors
+```
+
+```{r}
+jpeg('energycorrelation.jpeg',width=960, height=960, res = 150)
+pairs(energy)
+dev.off()
+```
+
+## Prepare for regressions
+Set up dummy variables - Glazing distribution (6 types, 0-5) and orientation (4 types, 2-5) - and datasets
+```{r}
+attach(energy)
+n = dim(energy)[1]
+#glazing area distribution
+gd1 = rep(0,n)
+gd1[glazdist==0]=1 #no glazing
+gd2 = rep(0,n)
+gd2[glazdist==1]=1 #uniform
+gd3 = rep(0,n)
+gd3[glazdist==2]=1 #north
+gd4 = rep(0,n)
+gd4[glazdist==3]=1 #east
+gd5 = rep(0,n)
+gd5[glazdist==4]=1 #south
+#orientation
+or1 = rep(0,n)
+or1[orient==2]=1 #north
+or2 = rep(0,n)
+or2[orient==3]=1 #east
+or3 = rep(0,n)
+or3[orient==4]=1 #south
+
+energy$gd1 = gd1
+energy$gd2 = gd2
+energy$gd3 = gd3
+energy$gd4 = gd4
+energy$gd5 = gd5
+energy$or1 = or1
+energy$or2 = or2
+energy$or3 = or3
+
+#datasets
+set.seed(1)
+train_idx = sample(1:n,n*0.8)
+train = energy[train_idx,]
+test = energy[-train_idx,]
+test_HL = test$heatload
+test_CL = test$coolload
+```
+
+## Univariate linear regressions
+We've spot-checked a few univariate linear regressions. The RMSEs on test errors are all relatively high.
+```{r}
+lm.fit = lm(heatload~relacomp, data=train)
+summary(lm.fit)
+plot(test$relacomp,test$heatload, xlab = 'relative compactness', ylab = 'heating load')
+abline(lm.fit)
+lm.pred = predict(lm.fit,newdata = test)
+sqrt(mean((lm.pred-test_HL)^2)) #7.51
+
+lm.fit2 = lm(heatload~glazarea, data=train)
+summary(lm.fit2)
+plot(test$glazarea,test$heatload, xlab = 'glazing area', ylab = 'heating load')
+abline(lm.fit2)
+lm.pred = predict(lm.fit2,newdata = test)
+sqrt(mean((lm.pred-test_HL)^2)) #9.73
+lm.fit3 = lm(coolload~relacomp, data=train)
+summary(lm.fit3)
+plot(test$relacomp,test$coolland, xlab = 'relative compactness', ylab = 'cooling load')
+abline(lm.fit3)
+lm.pred = predict(lm.fit3,newdata = test)
+sqrt(mean((lm.pred-test_CL)^2)) #7.25
+
+lm.fit4 = lm(coolload~glazarea, data=train)
+summary(lm.fit4)
+plot(test$glazarea,test$coolland, xlab = 'glazing area', ylab = 'cooling load')
+abline(lm.fit4)
+lm.pred = predict(lm.fit4,newdata = test)
+sqrt(mean((lm.pred-test_CL)^2)) #9.56
+```
+
+## Multivariate linear regressions
+```{r}
+library(DAAG)
+#HL
+lm.fit = lm(heatload~.-relacomp-coolload-roof-glazdist-orient, data = train)
+summary(lm.fit)
+cv.lm.fit = cv.lm(data = train, form.lm = lm.fit, m = 10) #all models seem similar
+# amongst gd, only gd1 seems to be significant - it only matters when there's no windows at all
+# roof got dropped automatically, because info told from other columns (collinearity)
+# no orientation is significant
+# cv allows us to be more certain about significance of each variable
+# total 5 significant variables
+lm.pred = predict(lm.fit, newdata = test)
+sqrt(mean((lm.pred-test$heatload)^2)) #RMSE = 2.87 kW --> already, much better than any univariate we checked
+```
+
+```{r}
+#CL
+lm.fit = lm(coolload~.-relacomp-heatload-roof-glazdist-orient+gd1+gd2+gd3+gd4+gd5+or1+or2+or3, data = train)
+summary(lm.fit)
+cv.lm.fit = cv.lm(data = train, form.lm = lm.fit, m = 10) #all models seem similar
+# similar results as above - gd1 is barely significant
+# no orientation is significant
+# total 5 significant variables, including gz1
+lm.pred = predict(lm.fit, newdata = test)
+mean((lm.pred-test$coolload)^2) #test RMSE = 3.46 kW (higher than the above)
+sqrt(mean((lm.pred-test$coolload)^2))
+```
+
+## Second power
+- can't do it for height, orientation, and glazing distribution because the first had
+two distinct values, while the latter are categorical
+```{r}
+#HL - relative compactness
+squared.fit = lm(heatload~poly(relacomp,degree=2), data = train)
+summary(squared.fit)
+squared.pred = predict(squared.fit, newdata = test)
+sqrt(mean((squared.pred-test$heatload)^2))
+# test RMSE = 7.27 - only very slighly better than simple.
+# Second degree is significant, but has opposite effect as relacomp^1. Not much sense 
+```
+
+```{r}
+#CL - relative compactness
+squared.fit = lm(coolload~poly(relacomp,degree=2), data = train)
+summary(squared.fit)
+squared.pred = predict(squared.fit, newdata = test)
+sqrt(mean((squared.pred-test$coolload)^2))
+# test RMSE = 6.89 - high. Power 2 significant but also in opposite direction
+```
+
+
+```{r}
+#HL - surface area
+squared.fit = lm(heatload~poly(surf,degree=2), data = train)
+summary(squared.fit)
+squared.pred = predict(squared.fit, newdata = test)
+sqrt(mean((squared.pred-test$heatload)^2))
+# test RMSE = 7.29 - very high. Second degree is significant and in the same direction - but because surface area, volume, and other areas are all related, hard to tell
+```
+
+```{r}
+#CL - surface area
+squared.fit = lm(coolload~poly(surf,degree=2), data = train)
+summary(squared.fit)
+squared.pred = predict(squared.fit, newdata = test)
+sqrt(mean((squared.pred-test$coolload)^2))
+# test MSE = 6.92 - high. Power 2 significant and in the same direction; but due to area
+```
+
+
+```{r}
+#HL - wall area
+squared.fit = lm(heatload~poly(wall,degree=2), data = train)
+summary(squared.fit)
+squared.pred = predict(squared.fit, newdata = test)
+sqrt(mean((squared.pred-test$heatload)^2))
+# test MSE = 8.71 - very high. Second degree not significant! also in different direction
+```
+
+```{r}
+#CL - wall area
+squared.fit = lm(coolload~poly(wall,degree=2), data = train)
+summary(squared.fit)
+squared.pred = predict(squared.fit, newdata = test)
+sqrt(mean((squared.pred-test$coolload)^2))
+# test MSE = 8.59 - high. Power 2 significant but in different directions
+```
+
+```{r}
+#HL - roof
+squared.fit = lm(heatload~poly(roof,degree=2), data = train)
+summary(squared.fit)
+squared.pred = predict(squared.fit, newdata = test)
+sqrt(mean((squared.pred-test$heatload)^2))
+# test RMSE = 4.69 - pretty good! Second degree significant and in the same direction; but roof area can be told from all the others...
+```
+
+```{r}
+#CL - roof
+squared.fit = lm(coolload~poly(roof,degree=2), data = train)
+summary(squared.fit)
+squared.pred = predict(squared.fit, newdata = test)
+sqrt(mean((squared.pred-test$coolload)^2))
+# test RMSE = 4.41 - pretty good! Power 2 significant and in same direction; but roof...
+```
+
+```{r}
+#HL - glazing area
+squared.fit = lm(heatload~poly(glazarea,degree=2), data = train)
+summary(squared.fit)
+squared.pred = predict(squared.fit, newdata = test)
+sqrt(mean((squared.pred-test$heatload)^2))
+# test MSE = 9.71 - very high. More importantly, the second degree glazing area is not significant
+```
+
+```{r}
+#CL - glazing area
+squared.fit = lm(coolload~poly(glazarea,degree=2), data = train)
+summary(squared.fit)
+squared.pred = predict(squared.fit, newdata = test)
+sqrt(mean((squared.pred-test$coolload)^2))
+# test MSE = 9.55 - very high. More importantly, the second degree glazing area is not significant
+```
+
+## Stepwise regression
+```{r}
+#set up
+rm(list=ls())
+energy = read.csv("ENB2012_data.csv")
+set.seed(1)
+n = nrow(energy)
+train_idx = sample(1:n,n*0.8) #note we'll all have different samples; need to combine all codes before comparing
+train = energy[train_idx,]
+test = energy[-train_idx,]
+test_HL = test$heatload
+test_CL = test$coolload
+
+XXEnergy_train <- model.matrix(heatload~.-relacomp-coolload, data=train)[,-1] #drop relacomp because highly correlated with surf
+XXEnergy_test <- model.matrix(heatload~.-relacomp-coolload, data=test)[,-1]
+
+y_HL <- train$heatload
+y_HL_test <- test$heatload
+XXEnergy_train2 = data.frame(y_HL,XXEnergy_train)
+XXEnergy_test2 = data.frame(y_HL_test,XXEnergy_test)
+
+null = lm(y_HL~1, data=XXEnergy_train2)
+full = glm(y_HL~., data=XXEnergy_train2)
+```
+
+```{r}
+#forward
+regForward = step(null, scope=formula(full), direction="forward", k=log(length(train)))
+summary(regForward)
+fwd.pred = predict(regForward, newdata = XXEnergy_test2)
+sqrt(mean((fwd.pred-y_HL_test)^2)) #test RMSE = 3.07; a bit worse than multivariate but understandable
+```
+
+```{r}
+regBack = step(full, direction="backward", k=log(length(train)))
+summary(regBack)
+bwd.pred = predict(regBack, newdata = XXEnergy_test2)
+sqrt(mean((bwd.pred-y_HL_test)^2)) #test MSE = 3.07
+```
+
+```{r}
+regBoth = step(null, scope=formula(full), direction="both", k=log(length(train)))
+summary(regBoth)
+both.pred = predict(regBoth, newdata = XXEnergy_test2)
+sqrt(mean((both.pred-y_HL_test)^2)) #test RMSE = 3.07
+```
+
+```{r}
+XXEnergy_train <- model.matrix(coolload~.-relacomp-heatload, data=train)[,-1] #drop relacomp because highly correlated with surf
+XXEnergy_test <- model.matrix(coolload~.-relacomp-heatload, data=test)[,-1]
+
+y_CL <- train$coolload
+y_CL_test <- test$coolload
+XXEnergy_train2 = data.frame(y_CL,XXEnergy_train)
+XXEnergy_test2 = data.frame(y_CL_test,XXEnergy_test)
+
+null = lm(y_CL~1, data=XXEnergy_train2)
+full = glm(y_CL~., data=XXEnergy_train2)
+
+regForward = step(null, scope=formula(full), direction="forward", k=log(length(train)))
+summary(regForward)
+fwd.pred = predict(regForward, newdata = XXEnergy_test2)
+sqrt(mean((fwd.pred-y_CL_test)^2)) #test RMSE = 3.53
+```
+
+
+```{r}
+regBack = step(full, direction="backward", k=log(length(train)))
+summary(regBack)
+bwd.pred = predict(regBack, newdata = XXEnergy_test2)
+sqrt(mean((bwd.pred-y_CL_test)^2)) #test RMSE = 3.53
+```
+
+```{r}
+regBoth = step(null, scope=formula(full), direction="both", k=log(length(train)))
+summary(regBoth)
+both.pred = predict(regBoth, newdata = XXEnergy_test2)
+sqrt(mean((both.pred-y_CL_test)^2)) #test RMSE = 3.53
+```
+
+## LASSO & Ridge
+```{r}
+library(glmnet)
+# Heating Load
+XXEnergy_train <- model.matrix(heatload~.-relacomp-coolload, data=train)[,-1] #drop relacomp because highly correlated with surf
+XXEnergy_test <- model.matrix(heatload~.-relacomp-coolload, data=test)[,-1]
+
+XXEnergy_train = scale(XXEnergy_train)
+XXEnergy_test = scale(XXEnergy_test)
+y_HL <- train$heatload
+y_HL_test <- test$heatload
+set.seed(1)
+Lasso.Fit = glmnet(XXEnergy_train,y_HL)
+Ridge.Fit = glmnet(XXEnergy_train,y_HL,alpha=0)
+
+par(mfrow=c(1,2))
+plot(Lasso.Fit)
+plot(Ridge.Fit)
+
+CV.L = cv.glmnet(XXEnergy_train,y_HL,alpha=1)
+CV.R = cv.glmnet(XXEnergy_train,y_HL,alpha=0)
+
+LamR = CV.R$lambda.1se
+LamL = CV.L$lambda.1se
+
+par(mfrow=c(1,2))
+plot(log(CV.R$lambda),sqrt(CV.R$cvm),main="Ridge CV (k=10)",xlab="log(lambda)",ylab = "RMSE",col=4,type="b",cex.lab=1.2)
+abline(v=log(LamR),lty=2,col=2,lwd=2)
+plot(log(CV.L$lambda),sqrt(CV.L$cvm),main="LASSO CV (k=10)",xlab="log(lambda)",ylab = "RMSE",col=4,type="b",cex.lab=1.2)
+abline(v=log(LamL),lty=2,col=2,lwd=2)
+
+coef.R = predict(CV.R,type="coefficients",s=LamR)
+coef.L = predict(CV.L,type="coefficients",s=LamL)
+
+ridge.pred=predict(CV.R,s=LamR,newx=XXEnergy_test)
+sqrt(mean((ridge.pred-y_HL_test)^2)) #MSE = 3.35
+
+lasso.pred=predict(CV.L,s=LamL,newx=XXEnergy_test)
+sqrt(mean((lasso.pred-y_HL_test)^2)) #MSE = 3.18
+par(mfrow=c(1,1))
+plot(abs(coef.R[2:8]),abs(coef.L[2:8]),ylim=c(0,10),xlim=c(0,10))
+abline(0,1)
+```
+
+```{r}
+# Cooling Load
+XXEnergy_train <- model.matrix(coolload~.-relacomp-heatload, data=train)[,-1] #drop relacomp because highly correlated with surf
+XXEnergy_test <- model.matrix(coolload~.-relacomp-heatload, data=test)[,-1]
+
+XXEnergy_train = scale(XXEnergy_train)
+XXEnergy_test = scale(XXEnergy_test)
+y_CL <- train$coolload
+y_CL_test <- test$coolload
+
+set.seed(1)
+Lasso.Fit = glmnet(XXEnergy_train,y_CL)
+Ridge.Fit = glmnet(XXEnergy_train,y_CL,alpha=0)
+
+par(mfrow=c(1,2))
+plot(Lasso.Fit)
+plot(Ridge.Fit)
+
+CV.L = cv.glmnet(XXEnergy_train,y_CL,alpha=1)
+CV.R = cv.glmnet(XXEnergy_train,y_CL,alpha=0)
+
+LamR = CV.R$lambda.1se
+LamL = CV.L$lambda.1se
+
+par(mfrow=c(1,2))
+plot(log(CV.R$lambda),sqrt(CV.R$cvm),main="Ridge CV (k=10)",xlab="log(lambda)",ylab = "RMSE",col=4,type="b",cex.lab=1.2)
+abline(v=log(LamR),lty=2,col=2,lwd=2)
+plot(log(CV.L$lambda),sqrt(CV.L$cvm),main="LASSO CV (k=10)",xlab="log(lambda)",ylab = "RMSE",col=4,type="b",cex.lab=1.2)
+abline(v=log(LamL),lty=2,col=2,lwd=2)
+
+coef.R = predict(CV.R,type="coefficients",s=LamR)
+coef.L = predict(CV.L,type="coefficients",s=LamL)
+# coef.R, coef.L
+
+ridge.pred=predict(CV.R,s=LamR,newx=XXEnergy_test)
+sqrt(mean((ridge.pred-y_CL_test)^2)) #RMSE = 3.88
+
+lasso.pred=predict(CV.L,s=LamL,newx=XXEnergy_test)
+sqrt(mean((lasso.pred-y_CL_test)^2)) #RMSE = 3.68
+```
+
+## Bagging and Random Forest
+```{r}
+rm(list=ls())
+energy <- read.csv("ENB2012_data.csv")
+library(randomForest)
+library(rpart)
+library(rpart.plot)
+
+#train, validation, and test sets
+n=nrow(energy)
+set.seed(1)
+train_idx = sample(1:n,n*0.8)
+train=energy[train_idx,]
+test = energy[-train_idx,]
+#--------------------------------------------------
+p = ncol(train)-2 #two response columns
+mtryv = c(p,p-1, p-3,p-2,sqrt(p))
+ntreev = c(10,20, 50, 100,200,300, 600)
+
+parmrf = expand.grid(mtryv,ntreev)
+colnames(parmrf)=c('mtry','ntree')
+nset = nrow(parmrf)
+
+olrfh = rep(0,nset) #olr = out of sample; preparing to fill in with predictions
+# ilrfh = rep(0,nset) #ilr = in-sample
+olrfc = rep(0,nset)
+# ilrfc = rep(0,nset)
+
+hrffits = vector('list',nset)
+crffits = vector('list',nset)
+
+# For heating set
+for(i in 1:nset) {
+  cat('doing rf ',i,' out of ',nset,'\n')
+  temprf = randomForest(heatload~.-coolload,data=train,mtry=parmrf[i,1],ntree=parmrf[i,2])
+  # ifit = predict(temprf)
+  ofit=predict(temprf,newdata=test)
+  olrfh[i] = sum((test$heatload-ofit)^2)
+  # ilrfh[i] = sum((train$heatload-ifit)^2)
+  hrffits[[i]]=temprf
+}
+
+# For cooling set
+for(i in 1:nset) {
+  cat('doing rf ',i,' out of ',nset,'\n')
+  temprf = randomForest(coolload~.-heatload,data=train,mtry=parmrf[i,1],ntree=parmrf[i,2])
+  ifit = predict(temprf)
+  ofit=predict(temprf,newdata=test)
+  olrfc[i] = sum((test$coolload-ofit)^2)
+  # ilrfc[i] = sum((train$coolload-ifit)^2)
+  crffits[[i]]=temprf
+}
+
+#ilrfh = round(sqrt(ilrfh/nrow(train)),3)
+olrfh = round(sqrt(olrfh/nrow(test)),3) #RMSE
+#ilrfc = round(sqrt(ilrfc/nrow(train)),3)
+olrfc = round(sqrt(olrfc/nrow(test)),3)
+
+print(cbind(parmrf,olrfh,olrfc))
+```
+
+```{r}
+iirfh=which.min(olrfh)
+hrf = hrffits[[iirfh]] #rf with one particular set of parameters
+hrfpred=predict(hrf,newdata=test)
+
+iirfc=which.min(olrfc)
+crf = crffits[[iirfc]]
+crfpred=predict(crf,newdata=test)
+
+print(cbind(iirfc, iirfh)) #HL RMSE: 0.498 with m = 7 and tree = 300; CL RMSE = 1.79 with m = 8 (bagging) and tree = 50
+
+plot(hrf)
+varImpPlot(hrf)
+plot(crf)
+varImpPlot(crf)
+```
+
+## Boosting
+```{r}
+rm(list=ls())
+library(class) ## a library with lots of classification tools
+library(gbm) #boost package
+energy = read.csv("ENB2012_data.csv", header = TRUE)
+attach(energy)
+
+n = dim(energy)[1]
+set.seed(1)
+train_idx = sample(1:n,n*0.8)
+train = energy[train_idx,]
+test = energy[-train_idx,]
+
+ntrev = c(5, 20, 100)
+intdepth = c(2, 4,10) 
+shrinkage = c(.001, 0.1, .2)
+parmboost= expand.grid(ntrev, intdepth, shrinkage)
+colnames(parmboost)= c('numtree', 'intdepth', 'lambda')
+
+nset=nrow(parmboost)
+osamph= rep(0,nset)
+osampc= rep(0,nset)
+
+hboostfits=vector('list', nset)
+cboostfits=vector('list', nset)
+
+# for cooling set
+for (j in 1:nset) {
+  cat('doing cooling boost ',j, ' out of ', nset, '\n' )
+  boost.fit = gbm(coolload~.-heatload,
+                     data=train,
+                     distribution='gaussian',
+                     n.trees = parmboost[j,1],
+                     interaction.depth=parmboost[j,2],
+                     shrinkage = parmboost[j,3],
+                     verbose = FALSE)
+  ofit = predict(boost.fit, newdata = test, n.trees = parmboost[j,1])
+  osampc[j] = sum((test$coolload-ofit)^2)
+  cboostfits[[j]] = boost.fit
+}
+
+# for heating set
+for (j in 1:nset) {
+  cat('doing heating boost ',j, ' out of ', nset, '\n' )
+  boost.fit = gbm(heatload~.-coolload,
+                     data=train,
+                     distribution='gaussian',
+                     n.trees = parmboost[j,1],
+                     interaction.depth=parmboost[j,2],
+                     shrinkage = parmboost[j,3],
+                     verbose = FALSE)
+  ofit = predict(boost.fit, newdata = test, n.trees = parmboost[j,1])
+  osamph[j] = sum((test$heat-ofit)^2)
+  hboostfits[[j]] = boost.fit
+}
+outsampRMSEh = round(sqrt(osamph/nrow(test)),3)
+outsampRMSEc = round(sqrt(osampc/nrow(test)),3)
+```
+
+```{r}
+print(cbind(parmboost,outsampRMSEh,outsampRMSEc))
+which.min(outsampRMSEh)
+which.min(outsampRMSEc)
+```
+The last option yielded the best result for both (0.405 for HL and 1.19 for Cooling) - the best of all models. Parameters:
+ntree = 100
+interaction depth = 10
+lambda = 0.2
+
+
+```{r}
+# Choose the best and plot
+bestH = which.min(outsampRMSEh)
+HLBoost = hboostfits[[bestH]] #boosting with one particular set of parameters
+
+bestC = which.min(outsampRMSEc)
+CLBoost = cboostfits[[bestC]]
+
+print(cbind(bestH, bestC))
+
+par(mfrow=c(2,1))
+p = ncol(energy)-2
+Hsum = summary(HLBoost,plotit=FALSE) #this will have the variable importance info
+row.names(Hsum)=NULL #drop varable names from rows.
+
+plot(Hsum$rel.inf,axes=F,pch=16,col='red')
+axis(1,labels=Hsum$var,at=1:p)
+axis(2)
+for(i in 1:p) lines(c(i,i),c(0,Hsum$rel.inf[i]),lwd=4,col='blue')
+
+Csum = summary(CLBoost,plotit=FALSE) #this will have the variable importance info
+row.names(Csum)=NULL #drop varable names from rows.
+
+plot(Csum$rel.inf,axes=F,pch=16,col='red')
+axis(1,labels=Csum$var,at=1:p)
+axis(2)
+for(i in 1:p) lines(c(i,i),c(0,Csum$rel.inf[i]),lwd=4,col='blue')
+```
